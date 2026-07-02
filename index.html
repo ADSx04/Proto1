@@ -468,11 +468,37 @@ header p { font-size: 13px; opacity: .9; margin-top: 4px; }
     <div class="menu-item" data-action="export">📤 Exporter mes données</div>
     <div class="menu-item" data-action="import">📥 Importer des données</div>
     <div class="menu-item" data-action="sample">✨ Charger des exemples</div>
+    <div class="menu-item" data-action="change-group">👥 Changer de groupe</div>
     <div class="menu-item danger" data-action="reset">🗑️ Tout effacer</div>
   </div>
 </div>
 <input type="file" id="file-import" accept="application/json" hidden>
-
+<div class="screen" id="screen-welcome" style="z-index:200">
+  <div class="screen-header">
+    <h2>🥬 Bienvenue !</h2>
+  </div>
+  <div class="screen-body">
+    <div style="text-align:center;padding:20px 0 30px">
+      <div style="font-size:70px;margin-bottom:10px">👨‍👩‍👧‍👦</div>
+      <h3 style="margin-bottom:8px">Groupe familial</h3>
+      <p style="color:var(--muted);font-size:14px;max-width:320px;margin:0 auto">
+        Entre le nom de ton groupe pour rejoindre les autres membres.
+        S'il n'existe pas encore, il sera créé automatiquement.
+      </p>
+    </div>
+    <div class="field" id="field-group">
+      <label>Nom du groupe *</label>
+      <input type="text" id="f-group" placeholder="Ex : Famille-Dupont-2024" maxlength="40" autocapitalize="off" autocomplete="off">
+      <div class="hint">Nom invalide</div>
+    </div>
+    <div style="background:var(--info-bg);border-radius:10px;padding:12px;font-size:12px;color:var(--text-2);line-height:1.5">
+      ⚠️ <strong>Important :</strong> Choisis un nom <strong>unique et difficile à deviner</strong> (avec chiffres, tirets, année…). N'importe qui connaissant ce nom peut accéder aux données.
+    </div>
+  </div>
+  <div class="screen-footer">
+    <button class="btn btn-primary" id="btn-join-group">🔗 Rejoindre / Créer</button>
+  </div>
+</div>
 <div class="overlay" id="dialog-overlay">
   <div class="dialog">
     <h3 id="dialog-title"></h3>

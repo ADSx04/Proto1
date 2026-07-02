@@ -1039,27 +1039,6 @@ function switchPage(page) {
   renderAll();
 }
 
-// ═══ PWA ═══
-function initPWA() {
-  // Manifest inline via Blob URL
-  const icon = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232563eb'/><text y='.9em' x='50%25' text-anchor='middle' font-size='70' dominant-baseline='central' alignment-baseline='central'>🥬</text></svg>";
-  const manifest = {
-    name: 'Mon Garde-Manger', short_name: 'Garde-Manger',
-    start_url: '.', scope: '.', display: 'standalone', orientation: 'portrait',
-    background_color: '#f3f4f6', theme_color: '#2563eb', lang: 'fr',
-    icons: [{ src: icon, sizes: '512x512', type: 'image/svg+xml', purpose: 'any' }]
-  };
-  const link = document.createElement('link');
-  link.rel = 'manifest';
-  link.href = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
-  document.head.appendChild(link);
-
-  // Service Worker (nécessite un fichier sw.js à côté – voir plus bas)
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {/* ok si absent */});
-  }
-}
-
 // ═══ INIT ═══
 function initSelects() {
   $('#f-unit').innerHTML = UNITS.map(u => `<option value="${u}">${u === 'pcs' ? 'pièce(s)' : u}</option>`).join('');
@@ -1068,7 +1047,6 @@ function initSelects() {
 
 function init() {
   initSelects();
-  initPWA();
 
   document.addEventListener('click', e => {
     const t = e.target;
@@ -1155,15 +1133,6 @@ function init() {
 }
 
 load(); init(); renderAll();
-  </div>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js')
-          .then(reg => console.log('✅ SW enregistré'))
-          .catch(err => console.error('❌ Erreur SW :', err));
-      });
-    }
-  </script>
+</script>
 </body>
 </html>

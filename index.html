@@ -9,6 +9,7 @@
   <meta name="theme-color" content="#2563eb" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Garde-Manger">
   <title>Mon Garde-Manger</title>
@@ -333,14 +334,14 @@ header p { font-size: 13px; opacity: .9; margin-top: 4px; }
   max-width: 400px; width: 100%; text-align: center;
 }
 .dialog h3 { font-size: 17px; margin-bottom: 8px; color: var(--text); }
-.dialog p { font-size: 14px; color: var(--muted); margin-bottom: 20px; }
+.dialog p { font-size: 14px; color: var(--muted); margin-bottom: 20px; white-space: pre-line; }
 .dialog-actions { display: flex; gap: 8px; }
 .menu-overlay { position: fixed; inset: 0; z-index: 250; display: none; }
 .menu-overlay.open { display: block; }
 .menu {
   position: absolute; top: 60px; right: 16px; background: var(--card);
   border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.15);
-  min-width: 220px; overflow: hidden;
+  min-width: 240px; overflow: hidden;
 }
 .menu-item {
   padding: 14px 18px; font-size: 14px; cursor: pointer;
@@ -348,6 +349,7 @@ header p { font-size: 13px; opacity: .9; margin-top: 4px; }
 }
 .menu-item:last-child { border-bottom: none; }
 .menu-item.danger { color: var(--danger); }
+.menu-item[hidden] { display: none; }
 
 @media (min-width: 600px) {
   body { max-width: 500px; margin: 0 auto; background: var(--card); box-shadow: 0 0 40px rgba(0,0,0,.08); }
@@ -466,6 +468,7 @@ header p { font-size: 13px; opacity: .9; margin-top: 4px; }
 
 <div class="menu-overlay" id="menu-overlay">
   <div class="menu">
+    <div class="menu-item" data-action="install" id="menu-install" hidden>📲 Installer l'app</div>
     <div class="menu-item" data-action="export">📤 Exporter mes données</div>
     <div class="menu-item" data-action="import">📥 Importer des données</div>
     <div class="menu-item" data-action="sample">✨ Charger des exemples</div>
@@ -507,7 +510,7 @@ header p { font-size: 13px; opacity: .9; margin-top: 4px; }
     <p id="dialog-message"></p>
     <div class="dialog-actions">
       <button class="btn btn-secondary" data-dialog="0">Annuler</button>
-      <button class="btn btn-danger" data-dialog="1">Confirmer</button>
+      <button class="btn btn-danger" data-dialog="1" id="dialog-ok">Confirmer</button>
     </div>
   </div>
 </div>
@@ -517,9 +520,12 @@ header p { font-size: 13px; opacity: .9; margin-top: 4px; }
 <script type="module">
 'use strict';
 
-// ═══ FIREBASE ═══
+// ═══ FIREBASE (nouvelle API de cache local) ═══
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
-import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, getDoc, writeBatch, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
+import {
+  initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+  collection, doc, onSnapshot, setDoc, deleteDoc, getDoc, writeBatch
+} from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCDzXrx0yf7ANZhUCAY8HH8lQh1qlrycCY",
@@ -531,8 +537,16 @@ const firebaseConfig = {
 };
 
 const fbApp = initializeApp(firebaseConfig);
-const db = getFirestore(fbApp);
-enableIndexedDbPersistence(db).catch(() => {}); // mode hors-ligne
+let db;
+try {
+  db = initializeFirestore(fbApp, {
+    localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+  });
+} catch {
+  // Fallback si déjà initialisé (rechargement à chaud)
+  const { getFirestore } = await import("https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js");
+  db = getFirestore(fbApp);
+}
 
 const GROUP_KEY = 'gm_group_id';
 const GROUP_NAME_KEY = 'gm_group_name';
@@ -565,6 +579,11 @@ const LOCS = { fridge: 'Frigo', freezer: 'Congélateur', pantry: 'Placard' };
 const UNITS = ['pcs', 'g', 'kg', 'mL', 'L', 'boîte', 'paquet'];
 const DIFF = { 1: 'Facile', 2: 'Moyen', 3: 'Difficile' };
 
+// Ingrédients "génériques" où un modificateur change tout (ex: lait ≠ lait de coco)
+const STRICT_INGREDIENTS = new Set([
+  'lait', 'creme', 'huile', 'sauce', 'sucre', 'farine', 'chocolat', 'vinaigre', 'beurre'
+]);
+
 const DEVICE_ID = (() => {
   let id = localStorage.getItem(DEV_KEY);
   if (!id) { id = 'dev-' + uid(); localStorage.setItem(DEV_KEY, id); }
@@ -575,7 +594,8 @@ const S = {
   items: [], filter: 'all', recipeFilter: 'all',
   editId: null, viewId: null, viewRecipeId: null,
   selectedLoc: 'fridge', currentPage: 'pantry',
-  dialogResolve: null, toastTimer: null, undoTimer: null
+  dialogResolve: null, toastTimer: null, undoTimer: null,
+  deferredInstallPrompt: null
 };
 
 const RECIPES = [
@@ -653,7 +673,39 @@ const RECIPES = [
    steps:["Four 200°C.","Badigeonner d'huile.","Disposer pommes de terre et ail.","Cuire 1h15.","Reposer 10 min."]},
   {id:'r25',emoji:'🧁',name:'Cake au yaourt',difficulty:1,time:45,servings:6,
    ingredients:[{name:'yaourt',qty:1,unit:'pcs'},{name:'farine',qty:250,unit:'g'},{name:'sucre',qty:150,unit:'g'},{name:'œuf',qty:3,unit:'pcs'},{name:'huile',qty:100,unit:'mL'},{name:'levure',qty:1,unit:'sachet',optional:true}],
-   steps:["Four 180°C.","Yaourt dans un saladier.","Ajouter tout.","Moule beurré.","Cuire 30-35 min."]}
+   steps:["Four 180°C.","Yaourt dans un saladier.","Ajouter tout.","Moule beurré.","Cuire 30-35 min."]},
+
+  // ══════ RECETTES D'ÉTÉ (r26–r35) ══════
+  {id:'r26',emoji:'🍅',name:'Salade caprese',difficulty:1,time:10,servings:2,
+   ingredients:[{name:'tomate',qty:3,unit:'pcs'},{name:'mozzarella',qty:200,unit:'g'},{name:'basilic',qty:1,unit:'bouquet',optional:true},{name:'huile olive',qty:2,unit:'c.à.s',optional:true}],
+   steps:["Trancher tomates et mozzarella.","Alterner sur un plat.","Parsemer de basilic.","Arroser d'huile d'olive.","Sel, poivre, servir frais."]},
+  {id:'r27',emoji:'🥣',name:'Gaspacho andalou',difficulty:1,time:15,servings:4,
+   ingredients:[{name:'tomate',qty:1,unit:'kg'},{name:'concombre',qty:1,unit:'pcs'},{name:'poivron',qty:1,unit:'pcs'},{name:'oignon',qty:0.5,unit:'pcs'},{name:'ail',qty:1,unit:'gousse',optional:true},{name:'huile olive',qty:3,unit:'c.à.s',optional:true}],
+   steps:["Couper grossièrement tous les légumes.","Mixer avec l'ail.","Ajouter huile, sel, vinaigre.","Passer au chinois (facultatif).","Réserver 2h au frais.","Servir bien froid."]},
+  {id:'r28',emoji:'🌾',name:'Taboulé oriental',difficulty:1,time:20,servings:4,
+   ingredients:[{name:'semoule',qty:250,unit:'g'},{name:'tomate',qty:3,unit:'pcs'},{name:'concombre',qty:1,unit:'pcs'},{name:'menthe',qty:1,unit:'bouquet'},{name:'citron',qty:2,unit:'pcs'},{name:'huile olive',qty:4,unit:'c.à.s',optional:true}],
+   steps:["Verser eau chaude sur la semoule, laisser gonfler.","Couper tomates et concombre en dés.","Ciseler la menthe.","Mélanger avec jus de citron et huile.","Sel, poivre.","Réserver 1h au frais."]},
+  {id:'r29',emoji:'🍉',name:'Salade pastèque féta',difficulty:1,time:10,servings:2,
+   ingredients:[{name:'pastèque',qty:500,unit:'g'},{name:'féta',qty:150,unit:'g'},{name:'menthe',qty:0.5,unit:'bouquet',optional:true},{name:'huile olive',qty:2,unit:'c.à.s',optional:true}],
+   steps:["Couper la pastèque en cubes.","Émietter la féta.","Parsemer de menthe.","Arroser d'huile d'olive.","Servir bien frais."]},
+  {id:'r30',emoji:'🍢',name:'Brochettes de poulet mariné',difficulty:2,time:35,servings:3,
+   ingredients:[{name:'poulet',qty:500,unit:'g'},{name:'citron',qty:2,unit:'pcs'},{name:'ail',qty:2,unit:'gousses'},{name:'huile olive',qty:3,unit:'c.à.s'},{name:'poivron',qty:2,unit:'pcs',optional:true}],
+   steps:["Couper le poulet en cubes.","Mariner 20 min avec citron, ail, huile.","Piquer sur brochettes.","Cuire 10 min au grill ou plancha.","Servir avec salade."]},
+  {id:'r31',emoji:'🥙',name:'Salade niçoise',difficulty:2,time:25,servings:3,
+   ingredients:[{name:'thon',qty:1,unit:'boîte'},{name:'œuf',qty:3,unit:'pcs'},{name:'tomate',qty:3,unit:'pcs'},{name:'haricot vert',qty:200,unit:'g'},{name:'olive',qty:100,unit:'g',optional:true},{name:'salade',qty:1,unit:'pcs'}],
+   steps:["Cuire les œufs durs (10 min).","Blanchir les haricots verts.","Couper tomates et œufs.","Dresser sur un lit de salade.","Ajouter thon et olives.","Vinaigrette, servir."]},
+  {id:'r32',emoji:'🥒',name:'Tzatziki grec',difficulty:1,time:15,servings:4,
+   ingredients:[{name:'concombre',qty:1,unit:'pcs'},{name:'yaourt',qty:400,unit:'g'},{name:'ail',qty:2,unit:'gousses'},{name:'menthe',qty:0.5,unit:'bouquet',optional:true},{name:'huile olive',qty:1,unit:'c.à.s',optional:true}],
+   steps:["Râper le concombre, égoutter.","Presser l'ail.","Mélanger avec le yaourt.","Ajouter menthe et huile.","Sel, poivre.","Frais 1h avant service."]},
+  {id:'r33',emoji:'🍈',name:'Melon jambon',difficulty:1,time:5,servings:2,
+   ingredients:[{name:'melon',qty:1,unit:'pcs'},{name:'jambon',qty:100,unit:'g'}],
+   steps:["Couper le melon en quartiers.","Retirer les pépins.","Disposer sur assiette avec le jambon.","Servir très frais."]},
+  {id:'r34',emoji:'🥬',name:'Rouleaux de printemps',difficulty:2,time:30,servings:2,
+   ingredients:[{name:'galette de riz',qty:6,unit:'pcs'},{name:'crevette',qty:200,unit:'g'},{name:'carotte',qty:1,unit:'pcs'},{name:'salade',qty:0.5,unit:'pcs'},{name:'menthe',qty:0.5,unit:'bouquet',optional:true}],
+   steps:["Tremper une galette dans l'eau tiède.","Disposer salade, carotte râpée, crevettes.","Ajouter menthe.","Rouler serré.","Servir avec sauce soja."]},
+  {id:'r35',emoji:'🍓',name:'Smoothie fruits rouges',difficulty:1,time:5,servings:2,
+   ingredients:[{name:'fraise',qty:200,unit:'g'},{name:'banane',qty:1,unit:'pcs'},{name:'yaourt',qty:150,unit:'g'},{name:'lait',qty:200,unit:'mL',optional:true},{name:'miel',qty:1,unit:'c.à.s',optional:true}],
+   steps:["Laver et équeuter les fraises.","Éplucher la banane.","Mixer tout ensemble.","Ajouter miel si besoin.","Servir bien frais."]}
 ];
 
 // ═══ VALIDATION ═══
@@ -673,7 +725,7 @@ const clean = x => ({
 
 const touch = it => { it.updatedAt = now(); it.updatedBy = DEVICE_ID; return it; };
 
-// ═══ FIRESTORE : LOAD / SAVE / DELETE ═══
+// ═══ FIRESTORE : LOAD / SYNC ═══
 function load() {
   currentGroup = localStorage.getItem(GROUP_KEY);
   S.items = [];
@@ -684,14 +736,25 @@ function startSync() {
   if (unsubscribe) unsubscribe();
   const itemsRef = collection(db, 'groups', currentGroup, 'items');
   unsubscribe = onSnapshot(itemsRef, snap => {
+    const oldViewedItem = S.viewId ? S.items.find(i => i.id === S.viewId) : null;
     S.items = snap.docs.map(d => clean({ ...d.data(), id: d.id }));
+    invalidateAnalysisCache();
     renderAll();
-    if (S.viewId) renderDetail();
+    // Ne re-render le détail QUE si l'item affiché a réellement changé
+    if (S.viewId) {
+      const newViewedItem = S.items.find(i => i.id === S.viewId);
+      if (!newViewedItem) { closeAll(); return; }
+      if (!oldViewedItem || itemHash(oldViewedItem) !== itemHash(newViewedItem)) {
+        renderDetail();
+      }
+    }
   }, err => {
     console.error('Erreur sync:', err);
     toast('❌ Erreur de synchronisation');
   });
 }
+
+const itemHash = i => `${i.name}|${i.qty}|${i.unit}|${i.date}|${i.location}|${i.category}|${i.updatedAt}`;
 
 async function joinOrCreateGroup(name) {
   const gid = normalizeGroup(name);
@@ -724,8 +787,12 @@ async function joinOrCreateGroup(name) {
 
 function updateGroupDisplay() {
   const gname = localStorage.getItem(GROUP_NAME_KEY) || currentGroup;
-  const sub = $('#header-sub');
-  if (sub && gname && S.currentPage === 'pantry' && !S.items.length) sub.textContent = `👥 ${gname}`;
+  if (!gname) return;
+  const total = S.items.length;
+  const prefix = `👥 ${gname}`;
+  if (S.currentPage === 'pantry') {
+    $('#header-sub').textContent = !total ? `${prefix} • Aucun produit` : `${prefix} • ${total} produit${total > 1 ? 's' : ''}`;
+  }
 }
 
 function changeGroup() {
@@ -734,22 +801,11 @@ function changeGroup() {
   localStorage.removeItem(GROUP_NAME_KEY);
   currentGroup = null;
   S.items = [];
+  invalidateAnalysisCache();
   renderAll();
   $('#f-group').value = '';
   openScreen('screen-welcome');
   setTimeout(() => $('#f-group').focus(), 300);
-}
-
-function save() {
-  if (!currentGroup) return false;
-  try {
-    const batch = writeBatch(db);
-    S.items.forEach(item => {
-      batch.set(doc(db, 'groups', currentGroup, 'items', item.id), item);
-    });
-    batch.commit().catch(e => { console.error(e); toast('❌ Erreur de sauvegarde'); });
-    return true;
-  } catch (e) { console.error(e); return false; }
 }
 
 async function firestoreDelete(id) {
@@ -780,21 +836,55 @@ const addDays = n => { const d = new Date(); d.setDate(d.getDate() + n); return 
 
 const normalize = s => String(s || '').toLowerCase()
   .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9\s]/g,' ')
-  .replace(/\s+/g,' ').trim().replace(/s$/, '');
+  .replace(/\s+/g,' ').trim().replace(/s\b/g, '');
 
+// Matching intelligent : évite les faux positifs (lait ≠ lait de coco)
 const hasIngredient = name => {
-  const t = normalize(name);
-  return t && S.items.some(i => i.qty > 0 && (normalize(i.name).includes(t) || t.includes(normalize(i.name))));
+  const target = normalize(name);
+  if (!target) return false;
+  const targetIsStrict = STRICT_INGREDIENTS.has(target);
+
+  return S.items.some(i => {
+    if (i.qty <= 0) return false;
+    const stock = normalize(i.name);
+    if (!stock) return false;
+
+    // Match exact toujours OK
+    if (stock === target) return true;
+
+    // Si l'ingrédient recette est "sensible" (lait, huile...), on refuse toute variation
+    if (targetIsStrict) return false;
+
+    // Sinon : target peut apparaître comme MOT COMPLET dans le stock
+    const stockWords = stock.split(' ');
+    if (stockWords.includes(target)) return true;
+
+    // Ou l'inverse : stock (mot unique) apparaît comme mot du target
+    if (!stock.includes(' ')) {
+      const targetWords = target.split(' ');
+      if (targetWords.includes(stock)) return true;
+    }
+
+    return false;
+  });
 };
+
+// ═══ MÉMOÏSATION DES ANALYSES DE RECETTES ═══
+let _analysisCache = new Map();
+const invalidateAnalysisCache = () => _analysisCache.clear();
+
 const analyze = r => {
+  if (_analysisCache.has(r.id)) return _analysisCache.get(r.id);
   const req = r.ingredients.filter(i => !i.optional);
   const have = req.filter(i => hasIngredient(i.name)).length;
-  return {
+  const result = {
     total: req.length, have,
     percent: req.length ? Math.round(have / req.length * 100) : 100,
     doable: have === req.length,
     almost: have >= req.length - 2 && have < req.length
   };
+  _analysisCache.set(r.id, result);
+  return result;
 };
 
 // ═══ TOAST & UNDO ═══
@@ -822,10 +912,11 @@ function undoToast(msg, undoFn) {
   S.undoTimer = setTimeout(hide, UNDO_MS);
 }
 
-const confirmDlg = (title, msg) => new Promise(r => {
+const confirmDlg = (title, msg, okLabel = 'Confirmer') => new Promise(r => {
   S.dialogResolve = r;
   $('#dialog-title').textContent = title;
   $('#dialog-message').textContent = msg;
+  $('#dialog-ok').textContent = okLabel;
   $('#dialog-overlay').classList.add('open');
 });
 const closeDialog = ok => {
@@ -846,11 +937,7 @@ function renderPantry() {
   $('#s-total').textContent = total;
   $('#s-soon').textContent = soon;
   $('#s-expired').textContent = expired;
-  if (S.currentPage === 'pantry') {
-    const gname = localStorage.getItem(GROUP_NAME_KEY);
-    const prefix = gname ? `👥 ${gname} • ` : '';
-    $('#header-sub').textContent = !total ? `${prefix}Aucun produit` : `${prefix}${total} produit${total > 1 ? 's' : ''}`;
-  }
+  if (S.currentPage === 'pantry') updateGroupDisplay();
 
   let list = S.items.slice();
   if (S.filter === 'alert') list = list.filter(i => statusOf(i) !== 'normal');
@@ -959,6 +1046,7 @@ function adjustQty(delta) {
   it.qty = Math.max(0, Math.min(MAX_QTY, Math.round((it.qty + delta * step) * 100) / 100));
   touch(it);
   setDoc(doc(db, 'groups', currentGroup, 'items', it.id), it).catch(e => console.error(e));
+  invalidateAnalysisCache();
   renderAll(); renderDetail();
   if (it.qty === 0 && delta < 0) toast('Stock épuisé');
 }
@@ -1008,17 +1096,19 @@ function deleteItem() {
   const backup = JSON.parse(JSON.stringify(S.items[idx]));
   firestoreDelete(backup.id);
   S.items.splice(idx, 1);
+  invalidateAnalysisCache();
   renderAll(); closeAll(); S.viewId = null;
   undoToast(`✓ « ${backup.name} » supprimé`, () => {
     if (!S.items.find(i => i.id === backup.id)) {
       touch(backup);
       S.items.splice(Math.min(idx, S.items.length), 0, backup);
       setDoc(doc(db, 'groups', currentGroup, 'items', backup.id), backup).catch(e => console.error(e));
+      invalidateAnalysisCache();
       renderAll();
     }
   });
 }
-
+// ═══ ACTIONS avec UNDO ═══
 function cookRecipe() {
   const r = RECIPES.find(x => x.id === S.viewRecipeId);
   if (!r || !analyze(r).doable) return;
@@ -1027,14 +1117,24 @@ function cookRecipe() {
   r.ingredients.forEach(ing => {
     if (ing.optional) return;
     const t = normalize(ing.name);
-    const p = S.items.find(i => i.qty > 0 && (normalize(i.name).includes(t) || t.includes(normalize(i.name))));
+    const p = S.items.find(i => {
+      if (i.qty <= 0) return false;
+      const s = normalize(i.name);
+      if (s === t) return true;
+      if (STRICT_INGREDIENTS.has(t)) return false;
+      const sw = s.split(' ');
+      if (sw.includes(t)) return true;
+      if (!s.includes(' ') && t.split(' ').includes(s)) return true;
+      return false;
+    });
     if (p) {
-      changes.push({ id: p.id, oldQty: p.qty, oldUpdatedAt: p.updatedAt, oldUpdatedBy: p.updatedBy });
+      changes.push({ id: p.id, oldQty: p.qty });
       p.qty = Math.max(0, Math.round((p.qty - (p.unit === ing.unit ? ing.qty : 1)) * 100) / 100);
       touch(p);
       setDoc(doc(db, 'groups', currentGroup, 'items', p.id), p).catch(e => console.error(e));
     }
   });
+  invalidateAnalysisCache();
   renderAll();
   closeAll(); S.viewRecipeId = null;
 
@@ -1047,6 +1147,7 @@ function cookRecipe() {
         setDoc(doc(db, 'groups', currentGroup, 'items', it.id), it).catch(e => console.error(e));
       }
     });
+    invalidateAnalysisCache();
     renderAll();
   });
 }
@@ -1089,20 +1190,25 @@ function saveForm() {
     .then(() => {
       closeScreen('screen-form');
       S.editId = null;
+      invalidateAnalysisCache();
       if (wasEditing && S.viewId === data.id) renderDetail();
       toast(wasEditing ? '✓ Produit modifié' : '✓ Produit ajouté');
     })
     .catch(e => { console.error(e); toast('❌ Erreur de sauvegarde'); });
 }
 
-// ═══ EXPORT/IMPORT/SAMPLES/RESET ═══
+// ═══ EXPORT / IMPORT / SAMPLES / RESET ═══
 function exportData() {
   if (!S.items.length) return toast('❌ Rien à exporter');
-  const blob = new Blob([JSON.stringify({ version: 4, deviceId: DEVICE_ID, group: currentGroup, exportedAt: now(), items: S.items }, null, 2)], { type: 'application/json' });
+  const blob = new Blob(
+    [JSON.stringify({ version: 4, deviceId: DEVICE_ID, group: currentGroup, exportedAt: now(), items: S.items }, null, 2)],
+    { type: 'application/json' }
+  );
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `garde-manger-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click(); URL.revokeObjectURL(a.href);
+  a.click();
+  URL.revokeObjectURL(a.href);
   toast('✓ Fichier téléchargé');
 }
 function importData(file) {
@@ -1114,7 +1220,7 @@ function importData(file) {
       if (!arr) throw 0;
       const c = arr.filter(validItem).map(clean);
       if (!c.length) return toast('❌ Aucun produit valide');
-      if (!await confirmDlg('Importer ?', `${c.length} produit(s) trouvé(s).`)) return;
+      if (!await confirmDlg('Importer ?', `${c.length} produit(s) trouvé(s) seront ajoutés.`, 'Importer')) return;
       const batch = writeBatch(db);
       c.forEach(i => { i.id = uid(); touch(i); batch.set(doc(db, 'groups', currentGroup, 'items', i.id), i); });
       await batch.commit();
@@ -1135,7 +1241,7 @@ async function loadSamples() {
     ['Fromage râpé','fridge',200,'g',15,'Produits laitiers'],['Parmesan','fridge',100,'g',30,'Produits laitiers']
   ].map(([name, location, qty, unit, d, category]) =>
     clean({ id: uid(), name, location, qty, unit, date: d !== null ? addDays(d) : '', category }));
-  if (S.items.length && !await confirmDlg('Ajouter des exemples ?', `${samples.length} produits seront ajoutés.`)) return;
+  if (S.items.length && !await confirmDlg('Ajouter des exemples ?', `${samples.length} produits seront ajoutés.`, 'Ajouter')) return;
   const batch = writeBatch(db);
   samples.forEach(i => batch.set(doc(db, 'groups', currentGroup, 'items', i.id), i));
   try { await batch.commit(); toast(`✓ ${samples.length} exemples ajoutés`); }
@@ -1143,7 +1249,7 @@ async function loadSamples() {
 }
 async function resetAll() {
   if (!S.items.length) return toast('Déjà vide');
-  if (!await confirmDlg('Tout effacer ?', `Les ${S.items.length} produits seront supprimés.`)) return;
+  if (!await confirmDlg('Tout effacer ?', `Les ${S.items.length} produits seront supprimés.`, 'Effacer')) return;
   const backup = JSON.parse(JSON.stringify(S.items));
   const batch = writeBatch(db);
   S.items.forEach(i => batch.delete(doc(db, 'groups', currentGroup, 'items', i.id)));
@@ -1162,7 +1268,45 @@ function switchPage(page) {
   $$('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.page === page));
   $('#page-title').textContent = page === 'pantry' ? '🥬 Mon Garde-Manger' : '🍳 Idées de recettes';
   $('#fab').classList.toggle('show', page === 'pantry');
+  if (page === 'pantry') updateGroupDisplay();
   renderAll();
+}
+
+// ═══ PWA INSTALL ═══
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+const isStandalone = () =>
+  window.matchMedia('(display-mode: standalone)').matches ||
+  window.navigator.standalone === true;
+
+function updateInstallMenuItem() {
+  const el = $('#menu-install');
+  if (!el) return;
+  if (isStandalone()) { el.hidden = true; return; }
+  // Affiche l'entrée si on a un prompt Android/Desktop OU si on est sur iOS (mode d'emploi manuel)
+  el.hidden = !(S.deferredInstallPrompt || isIOS());
+}
+
+async function tryInstall() {
+  if (S.deferredInstallPrompt) {
+    try {
+      S.deferredInstallPrompt.prompt();
+      const { outcome } = await S.deferredInstallPrompt.userChoice;
+      S.deferredInstallPrompt = null;
+      updateInstallMenuItem();
+      toast(outcome === 'accepted' ? '✓ Installation lancée' : 'Installation annulée');
+    } catch (e) {
+      console.error(e);
+      toast('❌ Installation impossible');
+    }
+  } else if (isIOS()) {
+    await confirmDlg(
+      '📲 Installer sur iOS',
+      "1. Appuie sur le bouton Partager en bas de Safari\n2. Choisis « Sur l'écran d'accueil »\n3. Appuie sur « Ajouter »",
+      'OK'
+    );
+  } else {
+    toast("Ton navigateur ne permet pas l'installation ici");
+  }
 }
 
 // ═══ INIT ═══
@@ -1209,12 +1353,13 @@ function init() {
     const qtyBtn = t.closest('[data-qty]');
     if (qtyBtn) return adjustQty(parseInt(qtyBtn.dataset.qty));
 
-    if (t.closest('#btn-menu')) { $('#menu-overlay').classList.add('open'); return; }
+    if (t.closest('#btn-menu')) { updateInstallMenuItem(); $('#menu-overlay').classList.add('open'); return; }
     const menuItem = t.closest('.menu-item');
     if (menuItem) {
       $('#menu-overlay').classList.remove('open');
       const a = menuItem.dataset.action;
-      if (a === 'export') exportData();
+      if (a === 'install') tryInstall();
+      else if (a === 'export') exportData();
       else if (a === 'import') $('#file-import').click();
       else if (a === 'sample') loadSamples();
       else if (a === 'reset') resetAll();
@@ -1255,6 +1400,20 @@ function init() {
     $('#menu-overlay').classList.remove('open');
   });
 
+  // ═══ PWA : capture du prompt d'installation ═══
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    S.deferredInstallPrompt = e;
+    updateInstallMenuItem();
+    console.log('📲 Prompt d\'installation disponible');
+  });
+  window.addEventListener('appinstalled', () => {
+    S.deferredInstallPrompt = null;
+    updateInstallMenuItem();
+    toast('✓ App installée !');
+  });
+  updateInstallMenuItem();
+
   if (!currentGroup) {
     openScreen('screen-welcome');
     setTimeout(() => $('#f-group').focus(), 300);
@@ -1264,17 +1423,42 @@ function init() {
     updateGroupDisplay();
   }
 
-  // Service Worker
+  // ═══ Service Worker avec gestion des mises à jour ═══
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js')
-      .then(() => console.log('✅ SW enregistré'))
-      .catch(err => console.error('❌ Erreur SW :', err));
+    navigator.serviceWorker.register('./sw.js').then(reg => {
+      console.log('✅ SW enregistré');
+      reg.addEventListener('updatefound', () => {
+        const nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener('statechange', () => {
+          if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+            // Nouvelle version disponible
+            undoToast('🔄 Nouvelle version disponible', () => {
+              nw.postMessage('SKIP_WAITING');
+              setTimeout(() => location.reload(), 300);
+            });
+            // Renomme le bouton "Annuler" en "Actualiser"
+            const btn = $('.toast-undo');
+            if (btn) btn.textContent = 'Actualiser';
+          }
+        });
+      });
+    }).catch(err => console.error('❌ Erreur SW :', err));
+
+    // Recharge automatique quand le nouveau SW prend le contrôle
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (refreshing) return;
+      refreshing = true;
+      location.reload();
+    });
   }
 
-  console.info('🥬 Garde-Manger v5 (Firebase) – Device:', DEVICE_ID);
+  console.info('🥬 Garde-Manger v5.1 (Firebase) – Device:', DEVICE_ID);
 }
 
-load(); init();
+load();
+init();
 </script>
 
 </body>
